@@ -81,6 +81,7 @@ const char *meow_linux_boot(uintptr_t payload, uintptr_t dtb)
 	if (h->cmdline[0] && !fdt_chosen_set_str(dtb, "bootargs", h->cmdline))
 		return "could not set /chosen bootargs";
 	con_hex("DTB", dtb);
+	fdt_diag(dtb);
 
 	/* Clean the kernel, the initrd and the DTB to the PoC. */
 	for (uint64_t a = kernel_pa; a < kernel_pa + h->kernel_size; a += 64)

@@ -10,6 +10,7 @@
  * property name is appended to the strings block (which dtc puts last).
  */
 #include "fdt.h"
+#include "console.h"
 #include <string.h>
 
 #define FDT_MAGIC	0xd00dfeed
@@ -294,4 +295,80 @@ int fdt_chosen_set_u64(uintptr_t fdt, const char *prop, uint64_t v)
 int fdt_chosen_set_str(uintptr_t fdt, const char *prop, const char *s)
 {
 	return fdt_chosen_set(fdt, prop, s, (uint32_t)strlen(s) + 1);
+}
+
+static int prefix(const char *s, const char *p)
+{
+	while (*p)
+		if (*s++ != *p++)
+			return 0;
+	return 1;
+}
+
+/*
+ * The kernel has no console yet, so the only way to see what ABL handed over is
+ * to print it here.  Shows the DTB size, the root model/compatible, the root's
+ * children and whether the display and USB nodes are present.
+ */
+void fdt_diag(uintptr_t fdt)
+{
+	if (!fdt || be32(fdt) != FDT_MAGIC) {
+		con_str("DTB", "bad magic");
+		return;
+	}
+	con_hex("DTB", fdt);
+	con_hex("SZ", be32(fdt + 4));
+
+	uintptr_t strings = fdt + be32(fdt + 12);
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t stop = p + be32(fdt + 36);
+	int depth = 0, printed = 0, dwc3 = 0, mdss = 0, disp = 0;
+
+	while (p < stop) {
+		uint32_t tok = be32(p);
+		p += 4;
+		if (tok == FDT_BEGIN_NODE) {
+			const char *name = (const char *)p;
+			if (depth >= 1) {
+				if (prefix(name, "dwc3"))
+					dwc3 = 1;
+				if (prefix(name, "mdss"))
+					mdss = 1;
+				if (streq(name, "display"))
+					disp = 1;
+			}
+			if (depth == 1 && printed < 14) {
+				char lab[3] = { 'N', (char)('0' + printed), 0 };
+				char buf[32];
+				int i = 0;
+				while (name[i] && i < 30)
+					buf[i] = name[i], i++;
+				buf[i] = 0;
+				con_str(lab, buf);
+				printed++;
+			}
+			depth++;
+			p = align4(skip_str(p));
+		} else if (tok == FDT_END_NODE) {
+			depth--;
+		} else if (tok == FDT_PROP) {
+			uint32_t len = be32(p), nameoff = be32(p + 4);
+			const char *pn = (const char *)(strings + nameoff);
+			if (depth == 1 && (streq(pn, "model") || streq(pn, "compatible"))) {
+				char buf[60];
+				uint32_t n = len < 59 ? len : 59;
+				memcpy(buf, (void *)(p + 8), n);
+				buf[n] = 0;
+				con_str(streq(pn, "model") ? "MODEL" : "COMPAT", buf);
+			}
+			p = align4(p + 8 + len);
+		} else if (tok == FDT_NOP) {
+			;
+		} else {
+			break;
+		}
+	}
+	con_str("DWC3", dwc3 ? "yes" : "no");
+	con_str("MDSS", mdss ? "yes" : "no");
+	con_str("DISP", disp ? "yes" : "no");
 }
