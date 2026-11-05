@@ -305,6 +305,19 @@ static int prefix(const char *s, const char *p)
 	return 1;
 }
 
+static void append(char *dst, uint32_t cap, const char *s)
+{
+	uint32_t l = (uint32_t)strlen(dst);
+
+	while (l + 1 < cap && *s)
+		dst[l++] = *s++;
+	dst[l] = 0;
+	if (l + 2 < cap) {
+		dst[l++] = ' ';
+		dst[l] = 0;
+	}
+}
+
 /*
  * The kernel has no console yet, so the only way to see what ABL handed over is
  * to print it here.  Shows the DTB size, the root model/compatible, the root's
@@ -322,13 +335,16 @@ void fdt_diag(uintptr_t fdt)
 	uintptr_t strings = fdt + be32(fdt + 12);
 	uintptr_t p = fdt + be32(fdt + 8);
 	uintptr_t stop = p + be32(fdt + 36);
-	int depth = 0, printed = 0, dwc3 = 0, mdss = 0, disp = 0, usb = 0;
+	int depth = 0, printed = 0, dwc3 = 0, mdss = 0, disp = 0, usb = 0, ud = 0;
+	char ubp[120];
+	ubp[0] = 0;
 
 	while (p < stop) {
 		uint32_t tok = be32(p);
 		p += 4;
 		if (tok == FDT_BEGIN_NODE) {
 			const char *name = (const char *)p;
+			depth++;
 			if (depth >= 1) {
 				if (prefix(name, "dwc3"))
 					dwc3 = 1;
@@ -336,8 +352,11 @@ void fdt_diag(uintptr_t fdt)
 					mdss = 1;
 				if (streq(name, "display"))
 					disp = 1;
+				if (!ud && (prefix(name, "dwc3") || prefix(name, "ssusb"))) {
+					ud = depth;
+					usb = 1;
+				}
 			}
-			usb = depth >= 1 && prefix(name, "dwc3");
 			if (depth == 1 && printed < 14) {
 				char lab[3] = { 'N', (char)('0' + printed), 0 };
 				char buf[32];
@@ -348,9 +367,10 @@ void fdt_diag(uintptr_t fdt)
 				con_str(lab, buf);
 				printed++;
 			}
-			depth++;
 			p = align4(skip_str(p));
 		} else if (tok == FDT_END_NODE) {
+			if (usb && depth == ud)
+				usb = 0;
 			depth--;
 		} else if (tok == FDT_PROP) {
 			uint32_t len = be32(p), nameoff = be32(p + 4);
@@ -368,6 +388,8 @@ void fdt_diag(uintptr_t fdt)
 				memcpy(buf, (void *)(p + 8), n);
 				buf[n] = 0;
 				con_str(streq(pn, "status") ? "USBS" : "USBC", buf);
+			} else if (usb) {
+				append(ubp, sizeof(ubp), pn);
 			}
 			p = align4(p + 8 + len);
 		} else if (tok == FDT_NOP) {
@@ -379,6 +401,7 @@ void fdt_diag(uintptr_t fdt)
 	con_str("DWC3", dwc3 ? "yes" : "no");
 	con_str("MDSS", mdss ? "yes" : "no");
 	con_str("DISP", disp ? "yes" : "no");
+	con_str("UBP", ubp);
 }
 
 static void put_u32be(uint8_t *p, uint32_t v)
@@ -539,7 +562,6 @@ int fdt_add_framebuffer(uintptr_t fdt, uint64_t addr, uint64_t size,
 	put_u32be(node + n, FDT_END_NODE);
 	n += 4;
 
-	uint32_t struct_off = be32(fdt + 8);
 	uint32_t struct_size = be32(fdt + 36);
 	uint32_t total = be32(fdt + 4);
 	uintptr_t insert = root_end(fdt);	/* inside the root node */
@@ -551,6 +573,226 @@ int fdt_add_framebuffer(uintptr_t fdt, uint64_t addr, uint64_t size,
 		wr32(fdt + 12, stroff + n);
 	memmove((void *)(insert + n), (void *)insert, (fdt + total) - insert);
 	memcpy((void *)insert, node, n);
+	wr32(fdt + 36, struct_size + n);
+	wr32(fdt + 4, total + n);
+	return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* USB: the ABL DTB describes the controller with the generic           */
+/* "snps,dwc3" compatible, so the Qualcomm glue -- which owns the      */
+/* clocks, the PHYs and the role switch and provides the UDC the       */
+/* serial gadget needs -- never binds.                                 */
+
+static int has_string(const char *v, uint32_t len, const char *s)
+{
+	uint32_t o = 0;
+
+	while (o < len) {
+		if (streq(v + o, s))
+			return 1;
+		o += (uint32_t)strlen(v + o) + 1;
+	}
+	return 0;
+}
+
+/* Rewrite a property value; a longer value grows the structure block. */
+static int rewrite_prop(uintptr_t fdt, uintptr_t prop, const void *val, uint32_t len)
+{
+	uint32_t oldlen = be32(prop + 4);
+	uint32_t oldsz = (12 + oldlen + 3) & ~3u;	/* token+len+nameoff+value */
+	uint32_t newsz = (12 + len + 3) & ~3u;
+
+	if (newsz > oldsz) {
+		uint32_t extra = newsz - oldsz;
+		uint32_t total = be32(fdt + 4);
+		uint32_t stroff = be32(fdt + 12);
+		uintptr_t at = prop + oldsz;
+
+		if (stroff >= at - fdt)
+			wr32(fdt + 12, stroff + extra);
+		memmove((void *)(at + extra), (void *)at, (fdt + total) - at);
+		wr32(fdt + 36, be32(fdt + 36) + extra);
+		wr32(fdt + 4, total + extra);
+	}
+	wr32(prop + 4, len);
+	memcpy((void *)(prop + 12), val, len);
+	memset((void *)(prop + 12 + len), 0, newsz - 12 - len);
+	return 1;
+}
+
+struct usbnode {
+	uintptr_t begin, end, compat;
+	uint32_t compat_len;
+	char name[40];
+};
+
+static int find_usb_node(uintptr_t fdt, struct usbnode *u)
+{
+	uintptr_t strings = fdt + be32(fdt + 12);
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t stop = p + be32(fdt + 36);
+	int depth = 0, ud = 0;
+
+	memset(u, 0, sizeof(*u));
+	while (p < stop) {
+		uint32_t tok = be32(p);
+		p += 4;
+		if (tok == FDT_BEGIN_NODE) {
+			const char *name = (const char *)p;
+			int i = 0;
+
+			depth++;
+			if (!ud && depth >= 1 &&
+			    (prefix(name, "dwc3") || prefix(name, "ssusb"))) {
+				ud = depth;
+				u->begin = p - 4;
+				while (name[i] && i < 38)
+					u->name[i] = name[i], i++;
+				u->name[i] = 0;
+			}
+			p = align4(skip_str(p));
+		} else if (tok == FDT_END_NODE) {
+			if (ud && depth == ud) {
+				u->end = p - 4;
+				return 1;
+			}
+			depth--;
+		} else if (tok == FDT_PROP) {
+			uint32_t len = be32(p), noff = be32(p + 4);
+
+			if (ud && depth == ud &&
+			    streq((const char *)(strings + noff), "compatible")) {
+				u->compat = p - 4;	/* the FDT_PROP token */
+				u->compat_len = len;
+			}
+			p = align4(p + 8 + len);
+		} else if (tok == FDT_NOP) {
+			;
+		} else {
+			break;
+		}
+	}
+	return 0;
+}
+
+static const char usb_core_props[][32] = {
+	"reg", "interrupts", "usb-phy", "iommus", "dr_mode",
+	"maximum-speed", "tx-fifo-resize", "snps,disable-clk-gating",
+	"snps,has-lpm-erratum", "snps,hird-threshold", "snps,usb3-u1u2-disable",
+	"snps,usb3_lpm_capable", "usb-core-id", "interrupt-parent",
+};
+
+static int core_prop(const char *n)
+{
+	unsigned nprops = sizeof(usb_core_props) / sizeof(usb_core_props[0]);
+
+	for (unsigned i = 0; i < nprops; i++)
+		if (streq(n, usb_core_props[i]))
+			return 1;
+	return 0;
+}
+
+/*
+ * Give the USB node the Qualcomm glue compatible and add the snps,dwc3 child
+ * the glue populates, copying the controller properties -- they carry phandles
+ * into this very DTB, so they must not be taken from another tree.
+ */
+int fdt_fix_usb(uintptr_t fdt)
+{
+	struct usbnode u;
+	int already = 0;
+
+	if (!fdt || be32(fdt) != FDT_MAGIC)
+		return 0;
+	if (!find_usb_node(fdt, &u))
+		return 0;
+
+	if (u.compat &&
+	    has_string((const char *)(u.compat + 12), u.compat_len,
+		       "qcom,dwc-usb3-msm"))
+		already = 1;
+
+	if (!already && u.compat) {
+		uint8_t nv[96];
+		uint32_t nl = 18;
+
+		memcpy(nv, "qcom,dwc-usb3-msm", 18);	/* 17 chars + NUL */
+		memcpy(nv + 18, (void *)(u.compat + 12), u.compat_len);
+		nl += u.compat_len;
+		rewrite_prop(fdt, u.compat, nv, nl);
+	}
+
+	/* the offsets moved, so look the node up again */
+	if (!find_usb_node(fdt, &u))
+		return 0;
+	if (already || !u.end)
+		return 1;
+
+	uint8_t child[1024];
+	uint32_t n;
+	const char *un = u.name;
+
+	while (*un && *un != '@')
+		un++;
+	if (*un != '@')
+		un = 0;
+
+	put_u32be(child, FDT_BEGIN_NODE);
+	n = 4;
+	child[n++] = 'd'; child[n++] = 'w'; child[n++] = 'c';
+	child[n++] = '3'; child[n++] = '@';
+	if (un) {
+		uint32_t l = (uint32_t)strlen(un + 1) + 1;
+
+		memcpy(child + n, un + 1, l);
+		n += l;
+	} else {
+		child[n++] = 0;
+	}
+	while (n & 3)
+		child[n++] = 0;
+
+	uintptr_t strings = fdt + be32(fdt + 12);
+	uintptr_t p = align4(u.begin + 4 + strlen((const char *)(u.begin + 4)) + 1);
+
+	while (p < u.end) {
+		uint32_t tok = be32(p);
+
+		if (tok == FDT_PROP) {
+			uint32_t len = be32(p + 4), noff = be32(p + 8);
+			const char *pn = (const char *)(strings + noff);
+
+			if (core_prop(pn) && n + 12 + len <= sizeof(child)) {
+				uint32_t off = strings_add(fdt, pn);
+
+				if (off == 0xffffffffu)
+					return 0;
+				n += put_prop(child + n, off, (void *)(p + 12), len);
+			}
+			p = align4(p + 12 + len);
+			continue;
+		}
+		break;
+	}
+	{
+		uint32_t off = strings_add(fdt, "compatible");
+
+		if (off == 0xffffffffu || n + 22 > sizeof(child))
+			return 0;
+		n += put_prop(child + n, off, "snps,dwc3", 10);
+	}
+	put_u32be(child + n, FDT_END_NODE);
+	n += 4;
+
+	uint32_t total = be32(fdt + 4);
+	uint32_t struct_size = be32(fdt + 36);
+	uint32_t stroff = be32(fdt + 12);
+
+	if (stroff >= u.end - fdt)
+		wr32(fdt + 12, stroff + n);
+	memmove((void *)(u.end + n), (void *)u.end, (fdt + total) - u.end);
+	memcpy((void *)u.end, child, n);
 	wr32(fdt + 36, struct_size + n);
 	wr32(fdt + 4, total + n);
 	return 1;

@@ -96,6 +96,13 @@ const char *meow_linux_boot(uintptr_t payload, uintptr_t dtb)
 	if (!fdt_add_framebuffer(dtb, FB_BASE, (uint64_t)FB_W * FB_H * 4,
 				 FB_W, FB_H, FB_STRIDE))
 		con_str("LINUX", "no framebuffer node");
+	/*
+	 * The ABL DTB describes the USB controller with the generic snps,dwc3
+	 * compatible, so the Qualcomm glue never binds and there is no UDC --
+	 * hence no serial gadget and no way to see the kernel log.
+	 */
+	if (!fdt_fix_usb(dtb))
+		con_str("LINUX", "usb fix failed");
 	con_hex("DTB", dtb);
 	fdt_diag(dtb);
 
