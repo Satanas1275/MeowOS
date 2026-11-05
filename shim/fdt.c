@@ -322,7 +322,7 @@ void fdt_diag(uintptr_t fdt)
 	uintptr_t strings = fdt + be32(fdt + 12);
 	uintptr_t p = fdt + be32(fdt + 8);
 	uintptr_t stop = p + be32(fdt + 36);
-	int depth = 0, printed = 0, dwc3 = 0, mdss = 0, disp = 0;
+	int depth = 0, printed = 0, dwc3 = 0, mdss = 0, disp = 0, usb = 0;
 
 	while (p < stop) {
 		uint32_t tok = be32(p);
@@ -337,6 +337,7 @@ void fdt_diag(uintptr_t fdt)
 				if (streq(name, "display"))
 					disp = 1;
 			}
+			usb = depth >= 1 && prefix(name, "dwc3");
 			if (depth == 1 && printed < 14) {
 				char lab[3] = { 'N', (char)('0' + printed), 0 };
 				char buf[32];
@@ -360,6 +361,13 @@ void fdt_diag(uintptr_t fdt)
 				memcpy(buf, (void *)(p + 8), n);
 				buf[n] = 0;
 				con_str(streq(pn, "model") ? "MODEL" : "COMPAT", buf);
+			}
+			if (usb && (streq(pn, "compatible") || streq(pn, "status"))) {
+				char buf[48];
+				uint32_t n = len < 47 ? len : 47;
+				memcpy(buf, (void *)(p + 8), n);
+				buf[n] = 0;
+				con_str(streq(pn, "status") ? "USBS" : "USBC", buf);
 			}
 			p = align4(p + 8 + len);
 		} else if (tok == FDT_NOP) {
