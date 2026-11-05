@@ -22,6 +22,7 @@
  * bootargs to /chosen/bootargs, so the kernel finds both.
  */
 #include <stdint.h>
+#include <string.h>
 #include "console.h"
 #include "fdt.h"
 #include "linux.h"
@@ -74,12 +75,27 @@ const char *meow_linux_boot(uintptr_t payload, uintptr_t dtb)
 	con_hex2("LINUX", "initrd=", initrd_pa, "size=", h->initrd_size);
 	lcopy(initrd_pa, payload + h->initrd_off, h->initrd_size);
 
+	/*
+	 * Work on a copy of the DTB: it has to grow for the framebuffer node and
+	 * there is no telling what follows the ABL's copy in memory.
+	 */
+	if (dtb) {
+		uint32_t sz = __builtin_bswap32(*(volatile uint32_t *)(dtb + 4));
+		uintptr_t wdtb = 0x94000000UL;
+		memcpy((void *)wdtb, (void *)dtb, sz);
+		dtb = wdtb;
+	}
+
 	/* Tell the kernel where the initrd is and what to boot with. */
 	if (!fdt_chosen_set_u64(dtb, "linux,initrd-start", initrd_pa) ||
 	    !fdt_chosen_set_u64(dtb, "linux,initrd-end", initrd_pa + h->initrd_size))
 		return "could not set /chosen initrd";
 	if (h->cmdline[0] && !fdt_chosen_set_str(dtb, "bootargs", h->cmdline))
 		return "could not set /chosen bootargs";
+	/* The panel is already lit by ABL; give the kernel a console on it. */
+	if (!fdt_add_framebuffer(dtb, FB_BASE, (uint64_t)FB_W * FB_H * 4,
+				 FB_W, FB_H, FB_STRIDE))
+		con_str("LINUX", "no framebuffer node");
 	con_hex("DTB", dtb);
 	fdt_diag(dtb);
 

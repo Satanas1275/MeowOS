@@ -372,3 +372,145 @@ void fdt_diag(uintptr_t fdt)
 	con_str("MDSS", mdss ? "yes" : "no");
 	con_str("DISP", disp ? "yes" : "no");
 }
+
+static void put_u32be(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)(v >> 24);
+	p[1] = (uint8_t)(v >> 16);
+	p[2] = (uint8_t)(v >> 8);
+	p[3] = (uint8_t)v;
+}
+
+static uint32_t put_u64be(uint8_t *p, uint64_t v, uint32_t cells)
+{
+	if (cells == 2) {
+		put_u32be(p, (uint32_t)(v >> 32));
+		put_u32be(p + 4, (uint32_t)v);
+		return 8;
+	}
+	put_u32be(p, (uint32_t)v);
+	return 4;
+}
+
+static uint32_t put_prop(uint8_t *b, uint32_t nameoff, const void *val, uint32_t len)
+{
+	put_u32be(b, FDT_PROP);
+	put_u32be(b + 4, len);
+	put_u32be(b + 8, nameoff);
+	memcpy(b + 12, val, len);
+	uint32_t n = 12 + len;
+	while (n & 3)
+		b[n++] = 0;
+	return n;
+}
+
+/* Value of a u32 property of the root node, 0 if it is not there. */
+static uint32_t root_cell(uintptr_t fdt, const char *name)
+{
+	uint32_t off = find_string(fdt, name, 0);
+	if (off == 0xffffffffu)
+		return 0;
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t end = p + be32(fdt + 36);
+	if (be32(p) != FDT_BEGIN_NODE)
+		return 0;
+	p = align4(skip_str(p + 4));
+	while (p < end) {
+		uint32_t tok = be32(p);
+		if (tok == FDT_END_NODE)
+			break;
+		if (tok == FDT_PROP) {
+			uint32_t len = be32(p + 4), noff = be32(p + 8);
+			if (noff == off && len == 4)
+				return be32(p + 12);
+			p = align4(p + 12 + len);
+			continue;
+		}
+		break;
+	}
+	return 0;
+}
+
+static uint32_t strings_add(uintptr_t fdt, const char *name)
+{
+	uint32_t off = find_string(fdt, name, 0);
+	if (off != 0xffffffffu)
+		return off;
+	uint32_t ssize = be32(fdt + 32);
+	uint32_t total = be32(fdt + 4);
+	uintptr_t strings = fdt + be32(fdt + 12);
+	uint32_t len = (uint32_t)strlen(name) + 1;
+	if (strings + ssize != fdt + total)
+		return 0xffffffffu;	/* strings block is not last */
+	memcpy((void *)(strings + ssize), name, len);
+	wr32(fdt + 32, ssize + len);
+	wr32(fdt + 4, total + len);
+	return ssize;
+}
+
+/*
+ * Add a "simple-framebuffer" node.  The ABL framebuffer is already set up and
+ * reserved, and the phone's DTB has no display node at all, so without this the
+ * kernel has no console on the panel.
+ */
+int fdt_add_framebuffer(uintptr_t fdt, uint64_t addr, uint64_t size,
+			uint32_t w, uint32_t h, uint32_t stride)
+{
+	uint32_t ac = root_cell(fdt, "#address-cells");
+	uint32_t sc = root_cell(fdt, "#size-cells");
+	if (ac == 0 || ac > 2 || sc == 0 || sc > 2)
+		return 0;
+
+	const char *pn[6] = { "compatible", "reg", "width", "height", "stride", "format" };
+	uint32_t off[6];
+	for (int i = 0; i < 6; i++) {
+		off[i] = strings_add(fdt, pn[i]);
+		if (off[i] == 0xffffffffu)
+			return 0;
+	}
+
+	uint8_t node[320];
+	uint32_t n = 4, k = 0;
+	const char *pfx = "framebuffer@";
+
+	put_u32be(node, FDT_BEGIN_NODE);
+	while (pfx[k])
+		node[n++] = (uint8_t)pfx[k++];
+	for (int s = 60; s >= 0; s -= 4) {
+		uint8_t d = (uint8_t)((addr >> s) & 0xf);
+		node[n++] = (uint8_t)(d < 10 ? '0' + d : 'a' + d - 10);
+	}
+	node[n++] = 0;
+	while (n & 3)
+		node[n++] = 0;
+
+	n += put_prop(node + n, off[0], "simple-framebuffer", 20);
+	uint8_t reg[16];
+	uint32_t rl = put_u64be(reg, addr, ac);
+	rl += put_u64be(reg + rl, size, sc);
+	n += put_prop(node + n, off[1], reg, rl);
+	uint8_t v[4];
+	put_u32be(v, w);
+	n += put_prop(node + n, off[2], v, 4);
+	put_u32be(v, h);
+	n += put_prop(node + n, off[3], v, 4);
+	put_u32be(v, stride);
+	n += put_prop(node + n, off[4], v, 4);
+	n += put_prop(node + n, off[5], "a8r8g8b8", 10);
+	put_u32be(node + n, FDT_END_NODE);
+	n += 4;
+
+	uint32_t struct_off = be32(fdt + 8);
+	uint32_t struct_size = be32(fdt + 36);
+	uint32_t total = be32(fdt + 4);
+	uintptr_t insert = fdt + struct_off + struct_size - 4;	/* before FDT_END */
+	uint32_t stroff = be32(fdt + 12);
+
+	if (stroff >= struct_off + struct_size - 4)
+		wr32(fdt + 12, stroff + n);
+	memmove((void *)(insert + n), (void *)insert, (fdt + total) - insert);
+	memcpy((void *)insert, node, n);
+	wr32(fdt + 36, struct_size + n);
+	wr32(fdt + 4, total + n);
+	return 1;
+}
