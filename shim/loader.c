@@ -97,8 +97,20 @@ extern char _end[], _head[];
 void loader_try_linux(uintptr_t dtb)
 {
 	uintptr_t emb = ((uintptr_t)_end + 0xfff) & ~0xfffUL;
-	if (magic_linux((const char *)emb))
-		loader_boot(dtb);
+	if (!magic_linux((const char *)emb))
+		return;
+	con_clear(BLACK);
+	con_str("LINUX", "payload found, booting");
+	const char *why = loader_boot(dtb);
+	/*
+	 * The payload is there but the boot failed. Say why and stop: falling
+	 * through to the MEOW OS terminal would hide the reason.
+	 */
+	con_clear(RED);
+	con_str("LINUX", "boot failed");
+	con_str("WHY", why);
+	for (;;)
+		__asm__ volatile("wfi");
 }
 
 const char *loader_boot(uintptr_t dtb)

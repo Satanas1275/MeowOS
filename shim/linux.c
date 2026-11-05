@@ -81,13 +81,16 @@ const char *meow_linux_boot(uintptr_t payload, uintptr_t dtb)
 	if (h->cmdline[0] && !fdt_chosen_set_str(dtb, "bootargs", h->cmdline))
 		con_str("LINUX", "no /chosen bootargs property");
 
-	/*
-	 * The kernel Image must be visible: it was written with the MMU off, but
-	 * ABL may have left the D-cache on, so clean it to the PoC.
-	 */
-	__asm__ volatile("dc cvac, %0" : : "r"(kernel_pa) : "memory");
-	for (uint64_t a = kernel_pa + 64; a < kernel_pa + h->kernel_size; a += 64)
+	/* Clean the kernel, the initrd and the DTB to the PoC. */
+	for (uint64_t a = kernel_pa; a < kernel_pa + h->kernel_size; a += 64)
 		__asm__ volatile("dc cvac, %0" : : "r"(a) : "memory");
+	for (uint64_t a = initrd_pa; a < initrd_pa + h->initrd_size; a += 64)
+		__asm__ volatile("dc cvac, %0" : : "r"(a) : "memory");
+	if (dtb) {
+		uint32_t dtb_size = __builtin_bswap32(*(volatile uint32_t *)(dtb + 4));
+		for (uint64_t a = dtb; a < dtb + dtb_size; a += 64)
+			__asm__ volatile("dc cvac, %0" : : "r"(a) : "memory");
+	}
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
 
 	con_str("LINUX", "booting");
