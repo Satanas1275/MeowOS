@@ -336,7 +336,7 @@ void fdt_diag(uintptr_t fdt)
 	uintptr_t p = fdt + be32(fdt + 8);
 	uintptr_t stop = p + be32(fdt + 36);
 	int depth = 0, printed = 0, dwc3 = 0, mdss = 0, disp = 0, usb = 0, ud = 0;
-	char ubp[120];
+	char ubp[240];
 	ubp[0] = 0;
 
 	while (p < stop) {
@@ -390,6 +390,19 @@ void fdt_diag(uintptr_t fdt)
 				con_str(streq(pn, "status") ? "USBS" : "USBC", buf);
 			} else if (usb) {
 				append(ubp, sizeof(ubp), pn);
+				if (streq(pn, "dr_mode") || streq(pn, "clock-names") ||
+				    streq(pn, "phy-names") || streq(pn, "usb-phy") ||
+				    streq(pn, "maximum-speed")) {
+					char buf[40];
+					uint32_t n = len < 39 ? len : 39;
+					memcpy(buf, (void *)(p + 8), n);
+					buf[n] = 0;
+					con_str(streq(pn, "dr_mode") ? "UDRM" :
+						streq(pn, "clock-names") ? "UCLK" :
+						streq(pn, "phy-names") ? "UPHN" :
+						streq(pn, "usb-phy") ? "UPHY" : "USPD",
+						buf);
+				}
 			}
 			p = align4(p + 8 + len);
 		} else if (tok == FDT_NOP) {
@@ -401,7 +414,17 @@ void fdt_diag(uintptr_t fdt)
 	con_str("DWC3", dwc3 ? "yes" : "no");
 	con_str("MDSS", mdss ? "yes" : "no");
 	con_str("DISP", disp ? "yes" : "no");
-	con_str("UBP", ubp);
+	/* the property list is longer than one line: wrap it */
+	for (uint32_t o = 0; o < strlen(ubp); o += 34) {
+		char lab[3] = { 'U', (char)('1' + o / 34), 0 };
+		char chunk[40];
+		uint32_t n = 0;
+
+		while (o + n < strlen(ubp) && n < 34)
+			chunk[n] = ubp[o + n], n++;
+		chunk[n] = 0;
+		con_str(lab, chunk);
+	}
 }
 
 static void put_u32be(uint8_t *p, uint32_t v)
