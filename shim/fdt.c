@@ -404,6 +404,37 @@ static uint32_t put_prop(uint8_t *b, uint32_t nameoff, const void *val, uint32_t
 	return n;
 }
 
+/*
+ * Offset of the root node's FDT_END_NODE, i.e. the place to insert a new
+ * top-level node so that it ends up *inside* the tree.
+ */
+static uintptr_t root_end(uintptr_t fdt)
+{
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t end = p + be32(fdt + 36);
+	int depth = 0;
+
+	while (p < end) {
+		uint32_t tok = be32(p);
+		p += 4;
+		if (tok == FDT_BEGIN_NODE) {
+			depth++;
+			p = align4(skip_str(p));
+		} else if (tok == FDT_END_NODE) {
+			depth--;
+			if (depth == 0)
+				return p - 4;
+		} else if (tok == FDT_PROP) {
+			p = align4(p + 8 + be32(p));
+		} else if (tok == FDT_NOP) {
+			;
+		} else {
+			break;
+		}
+	}
+	return 0;
+}
+
 /* Value of a u32 property of the root node, 0 if it is not there. */
 static uint32_t root_cell(uintptr_t fdt, const char *name)
 {
@@ -503,10 +534,12 @@ int fdt_add_framebuffer(uintptr_t fdt, uint64_t addr, uint64_t size,
 	uint32_t struct_off = be32(fdt + 8);
 	uint32_t struct_size = be32(fdt + 36);
 	uint32_t total = be32(fdt + 4);
-	uintptr_t insert = fdt + struct_off + struct_size - 4;	/* before FDT_END */
+	uintptr_t insert = root_end(fdt);	/* inside the root node */
+	if (!insert)
+		return 0;
 	uint32_t stroff = be32(fdt + 12);
 
-	if (stroff >= struct_off + struct_size - 4)
+	if (stroff >= insert - fdt)
 		wr32(fdt + 12, stroff + n);
 	memmove((void *)(insert + n), (void *)insert, (fdt + total) - insert);
 	memcpy((void *)insert, node, n);
