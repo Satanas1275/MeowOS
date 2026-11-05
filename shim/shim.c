@@ -527,6 +527,8 @@ void shim_main(uint64_t dtb)
 	}
 #endif
 	con_splash();
+	/* A Linux payload appended to the shim Image takes priority. */
+	loader_try_linux(dtb);
 #if MEOW_BOOT_IOS
 	delay_ms(2000);
 	con_clear(RED);

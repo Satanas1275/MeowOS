@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include "console.h"
 #include "fdt.h"
+#include "linux.h"
 #include "loader.h"
 
 #define BOOT_LINE_LENGTH	608
@@ -74,10 +75,31 @@ static int magic_ok(const char *m)
 	return 1;
 }
 
+static int magic_linux(const char *m)
+{
+	static const char want[] = "MEOXLINUX";
+	for (int i = 0; i < 8; i++)
+		if (m[i] != want[i])
+			return 0;
+	return 1;
+}
+
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 /* build.sh appends the payload to the Image at the first 4K boundary after _end */
-extern char _end[];
+extern char _end[], _head[];
+
+/*
+ * MEOW OS: a Linux payload (tools/mklinux.py) is appended to the shim Image, so
+ * it sits right after _end. Boot it before the MEOW OS terminal. Returns if
+ * there is no such payload.
+ */
+void loader_try_linux(uintptr_t dtb)
+{
+	uintptr_t emb = ((uintptr_t)_end + 0xfff) & ~0xfffUL;
+	if (magic_linux((const char *)emb))
+		loader_boot(dtb);
+}
 
 const char *loader_boot(uintptr_t dtb)
 {
@@ -90,9 +112,14 @@ const char *loader_boot(uintptr_t dtb)
 	 * Its exact size is unknown here; the kernel memory check below only
 	 * needs an upper bound, and the Image is far below phys_base.
 	 */
-	if (magic_ok((const char *)emb)) {
+	if (magic_ok((const char *)emb) || magic_linux((const char *)emb)) {
 		rd_start = emb;
-		rd_end = emb + 0x8000000;
+		/*
+		 * The Image header's image_size covers the appended payload, so
+		 * the scan bound is the end of the Image, not a guess.
+		 */
+		uint64_t image_size = *(const uint64_t *)((uintptr_t)_head + 16);
+		rd_end = image_size ? (uintptr_t)_head + image_size : emb + 0x8000000;
 		con_hex("EMBED", emb);
 	} else {
 		if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
@@ -126,6 +153,9 @@ const char *loader_boot(uintptr_t dtb)
 		rd_end = dst + (rd_end - hit);
 		rd_start = dst;
 	}
+	if (magic_linux((const char *)rd_start))
+		return meow_linux_boot(rd_start, dtb);
+
 	const struct payload *p = (const struct payload *)rd_start;
 	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
 		return "bad payload header";
