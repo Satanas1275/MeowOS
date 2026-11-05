@@ -148,12 +148,12 @@ const char *loader_boot(uintptr_t dtb)
 	 */
 	uintptr_t hit = 0;
 	for (uintptr_t a = rd_start; a + 8 <= rd_end; a++)
-		if (magic_ok((const char *)a)) {
+		if (magic_ok((const char *)a) || magic_linux((const char *)a)) {
 			hit = a;
 			break;
 		}
 	if (!hit)
-		return "no SWEETXNU payload";
+		return "no payload";
 	if (hit != rd_start) {
 		uintptr_t dst = (rd_start + 7) & ~7UL;
 		volatile uint8_t *d = (volatile uint8_t *)dst;
