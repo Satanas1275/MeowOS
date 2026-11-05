@@ -231,12 +231,36 @@ int fdt_chosen_set(uintptr_t fdt, const char *prop, const void *val, uint32_t le
 		uint32_t ssize = be32(fdt + 32);
 		uint32_t total = be32(fdt + 4);
 		uintptr_t strings = fdt + be32(fdt + 12);
-		if (strings + ssize != fdt + total)
-			return 0;	/* strings block is not last: no room */
-		nameoff = ssize;
-		memcpy((void *)(strings + ssize), prop, name_len);
-		wr32(fdt + 32, ssize + name_len);
-		wr32(fdt + 4, total + name_len);
+		if (strings + ssize != fdt + total) {
+			/*
+			 * The strings block is not last, so there is nowhere to put
+			 * a new name. Reuse a zero hole in the block if there is one
+			 * that is big enough.
+			 */
+			uint32_t hole = 0, best = 0;
+			for (uint32_t o = 0; o + name_len <= ssize; o++) {
+				if (*(volatile uint8_t *)(strings + o) == 0) {
+					uint32_t n = 0;
+					while (o + n < ssize &&
+					       *(volatile uint8_t *)(strings + o + n) == 0)
+						n++;
+					if (n >= name_len && (!best || n < best)) {
+						best = n;
+						hole = o;
+					}
+					o += n;
+				}
+			}
+			if (!best)
+				return 0;
+			nameoff = hole;
+			memcpy((void *)(strings + hole), prop, name_len);
+		} else {
+			nameoff = ssize;
+			memcpy((void *)(strings + ssize), prop, name_len);
+			wr32(fdt + 32, ssize + name_len);
+			wr32(fdt + 4, total + name_len);
+		}
 	}
 
 	/*

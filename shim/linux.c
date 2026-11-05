@@ -77,9 +77,10 @@ const char *meow_linux_boot(uintptr_t payload, uintptr_t dtb)
 	/* Tell the kernel where the initrd is and what to boot with. */
 	if (!fdt_chosen_set_u64(dtb, "linux,initrd-start", initrd_pa) ||
 	    !fdt_chosen_set_u64(dtb, "linux,initrd-end", initrd_pa + h->initrd_size))
-		con_str("LINUX", "no /chosen initrd property");
+		return "could not set /chosen initrd";
 	if (h->cmdline[0] && !fdt_chosen_set_str(dtb, "bootargs", h->cmdline))
-		con_str("LINUX", "no /chosen bootargs property");
+		return "could not set /chosen bootargs";
+	con_hex("DTB", dtb);
 
 	/* Clean the kernel, the initrd and the DTB to the PoC. */
 	for (uint64_t a = kernel_pa; a < kernel_pa + h->kernel_size; a += 64)
