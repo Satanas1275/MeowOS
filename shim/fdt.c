@@ -204,10 +204,13 @@ static uintptr_t chosen_prop_val(uintptr_t fdt, const char *prop, uint32_t *len_
 	return 0;
 }
 
+/* Rewrite a property value; a longer value grows the structure block. */
+static int rewrite_prop(uintptr_t fdt, uintptr_t prop, const void *val, uint32_t len);
+
 /*
  * Set a /chosen property. An existing property is overwritten in place (the new
- * value must fit). A missing one is inserted before /chosen's FDT_END_NODE.
- * Returns 1 on success.
+ * value must fit), grown in place when the new value is longer, or inserted
+ * before /chosen's FDT_END_NODE when it is missing.  Returns 1 on success.
  */
 int fdt_chosen_set(uintptr_t fdt, const char *prop, const void *val, uint32_t len)
 {
@@ -218,11 +221,13 @@ int fdt_chosen_set(uintptr_t fdt, const char *prop, const void *val, uint32_t le
 	uint32_t oldlen = 0;
 	uintptr_t old = chosen_prop_val(fdt, prop, &oldlen);
 	if (old) {
-		if (len > oldlen)
-			return 0;
-		memcpy((void *)old, val, len);
-		memset((void *)(old + len), 0, oldlen - len);
-		return 1;
+		if (len <= oldlen) {
+			memcpy((void *)old, val, len);
+			memset((void *)(old + len), 0, oldlen - len);
+			return 1;
+		}
+		/* the new value is longer: grow the property in place */
+		return rewrite_prop(fdt, old - 12, val, len);
 	}
 
 	/* Append the property name to the strings block (dtc puts it last). */
