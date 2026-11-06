@@ -604,7 +604,7 @@ int fdt_add_framebuffer(uintptr_t fdt, uint64_t addr, uint64_t size,
 	while (n & 3)
 		node[n++] = 0;
 
-	n += put_prop(node + n, off[0], "simple-framebuffer", 20);
+	n += put_prop(node + n, off[0], "meow,fb\0simple-framebuffer\0", 29);
 	uint8_t reg[16];
 	uint32_t rl = put_u64be(reg, addr, ac);
 	rl += put_u64be(reg + rl, size, sc);
