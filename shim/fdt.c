@@ -416,7 +416,10 @@ void fdt_diag(uintptr_t fdt)
 				con_hex(streq(pn, "width") ? "FBW" :
 					streq(pn, "height") ? "FBH" : "FBS",
 					be32(p + 8));
-			else if (fb && streq(pn, "format")) {
+			else if (fb && streq(pn, "reg")) {
+				con_hex2("FBR", "h=", be32(p + 8), "l=", be32(p + 12));
+				con_hex2("FBSZ", "h=", be32(p + 16), "l=", be32(p + 20));
+			} else if (fb && streq(pn, "format")) {
 				char buf[24];
 				uint32_t n = len < 23 ? len : 23;
 				memcpy(buf, (void *)(p + 8), n);
