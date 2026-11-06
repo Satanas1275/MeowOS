@@ -31,7 +31,7 @@ HDR = 0x458
 CMDLINE = 0x58
 
 
-def build(kernel, initrd, dtb, cmdline, kernel_pa, initrd_pa):
+def build(kernel, initrd, dtb, cmdline, kernel_pa, initrd_pa, dtb_pa):
     k = open(kernel, 'rb').read()
     i = open(initrd, 'rb').read()
     d = open(dtb, 'rb').read() if dtb else b''
@@ -48,7 +48,7 @@ def build(kernel, initrd, dtb, cmdline, kernel_pa, initrd_pa):
     struct.pack_into('<9Q', out, 0x10,
                      kernel_pa, off_k, len(k),
                      initrd_pa, off_i, len(i),
-                     0, off_d, len(d))
+                     dtb_pa, off_d, len(d))
     cl = cmdline.encode()[:1023]
     out[CMDLINE:CMDLINE + len(cl)] = cl
     return bytes(out)
@@ -60,13 +60,15 @@ def main():
     ap.add_argument('initrd')
     ap.add_argument('out')
     ap.add_argument('--dtb')
+    ap.add_argument('--dtb-pa', default='0')
     ap.add_argument('--cmdline', default='console=ttyGS0')
     ap.add_argument('--kernel-pa', default='0x88000000')
     ap.add_argument('--initrd-pa', default='0x90000000')
     a = ap.parse_args()
     kernel_pa = int(a.kernel_pa, 16)
     initrd_pa = int(a.initrd_pa, 16)
-    blob = build(a.kernel, a.initrd, a.dtb, a.cmdline, kernel_pa, initrd_pa)
+    dtb_pa = int(a.dtb_pa, 16)
+    blob = build(a.kernel, a.initrd, a.dtb, a.cmdline, kernel_pa, initrd_pa, dtb_pa)
     open(a.out, 'wb').write(blob)
     print(f'{a.out}: {len(blob)} bytes, kernel {kernel_pa:#x}, initrd {initrd_pa:#x}')
 

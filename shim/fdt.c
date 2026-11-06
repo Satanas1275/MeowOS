@@ -576,6 +576,32 @@ static uint32_t strings_add(uintptr_t fdt, const char *name)
 int fdt_add_framebuffer(uintptr_t fdt, uint64_t addr, uint64_t size,
 			uint32_t w, uint32_t h, uint32_t stride)
 {
+	/* already described by the firmware? then leave the tree alone */
+	{
+		uintptr_t p = fdt + be32(fdt + 8);
+		uintptr_t stop = p + be32(fdt + 36);
+
+		while (p < stop) {
+			uint32_t tok = be32(p);
+
+			p += 4;
+			if (tok == FDT_BEGIN_NODE) {
+				const char *name = (const char *)p;
+
+				if (prefix(name, "framebuffer") ||
+				    prefix(name, "simple-framebuffer"))
+					return 1;
+				p = align4(skip_str(p));
+			} else if (tok == FDT_PROP) {
+				p = align4(p + 8 + be32(p));
+			} else if (tok == FDT_NOP || tok == FDT_END_NODE) {
+				;
+			} else {
+				break;
+			}
+		}
+	}
+
 	uint32_t ac = root_cell(fdt, "#address-cells");
 	uint32_t sc = root_cell(fdt, "#size-cells");
 	if (ac == 0 || ac > 2 || sc == 0 || sc > 2)
@@ -648,6 +674,18 @@ static int has_string(const char *v, uint32_t len, const char *s)
 
 	while (o < len) {
 		if (streq(v + o, s))
+			return 1;
+		o += (uint32_t)strlen(v + o) + 1;
+	}
+	return 0;
+}
+
+static int has_prefix_in_list(const char *v, uint32_t len, const char *pfx)
+{
+	uint32_t o = 0;
+
+	while (o < len) {
+		if (prefix(v + o, pfx))
 			return 1;
 		o += (uint32_t)strlen(v + o) + 1;
 	}
@@ -769,6 +807,11 @@ int fdt_fix_usb(uintptr_t fdt)
 	if (u.compat &&
 	    has_string((const char *)(u.compat + 12), u.compat_len,
 		       "qcom,dwc-usb3-msm"))
+		already = 1;
+	/* a mainline Qualcomm USB node: already complete, leave it alone */
+	if (u.compat &&
+	    has_prefix_in_list((const char *)(u.compat + 12), u.compat_len,
+			       "qcom,"))
 		already = 1;
 
 	if (!already && u.compat) {

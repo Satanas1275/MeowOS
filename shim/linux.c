@@ -76,10 +76,13 @@ const char *meow_linux_boot(uintptr_t payload, uintptr_t dtb)
 	lcopy(initrd_pa, payload + h->initrd_off, h->initrd_size);
 
 	/*
-	 * Work on a copy of the DTB: it has to grow for the framebuffer node and
-	 * there is no telling what follows the ABL's copy in memory.
+	 * The DTB: either the one embedded in the payload (dtb_pa) or the one ABL
+	 * handed over. Either way work on a copy at a known address.
 	 */
-	if (dtb) {
+	if (h->dtb_pa && h->dtb_size) {
+		dtb = h->dtb_pa;
+		lcopy(dtb, payload + h->dtb_off, h->dtb_size);
+	} else if (dtb) {
 		uint32_t sz = __builtin_bswap32(*(volatile uint32_t *)(dtb + 4));
 		uintptr_t wdtb = 0x94000000UL;
 		memcpy((void *)wdtb, (void *)dtb, sz);
