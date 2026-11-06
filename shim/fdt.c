@@ -336,7 +336,7 @@ void fdt_diag(uintptr_t fdt)
 	uintptr_t p = fdt + be32(fdt + 8);
 	uintptr_t stop = p + be32(fdt + 36);
 	int depth = 0, printed = 0, dwc3 = 0, mdss = 0, disp = 0, usb = 0, ud = 0;
-	int fb = 0, fbd = 0;
+	int fb = 0, fbd = 0, dispd = 0;
 	char ubp[240];
 	ubp[0] = 0;
 
@@ -361,6 +361,10 @@ void fdt_diag(uintptr_t fdt)
 					fbd = depth;
 					fb = 1;
 				}
+				if (!dispd && streq(name, "display")) {
+					dispd = depth;
+					disp = 1;
+				}
 			}
 			if (depth == 1 && printed < 14) {
 				char lab[3] = { 'N', (char)('0' + printed), 0 };
@@ -378,6 +382,8 @@ void fdt_diag(uintptr_t fdt)
 				usb = 0;
 			if (fb && depth == fbd)
 				fb = 0;
+			if (dispd && depth == dispd)
+				dispd = 0;
 			depth--;
 		} else if (tok == FDT_PROP) {
 			uint32_t len = be32(p), nameoff = be32(p + 4);
@@ -425,6 +431,13 @@ void fdt_diag(uintptr_t fdt)
 				memcpy(buf, (void *)(p + 8), n);
 				buf[n] = 0;
 				con_str("FBF", buf);
+			}
+			if (dispd && streq(pn, "compatible")) {
+				char buf[48];
+				uint32_t n = len < 47 ? len : 47;
+				memcpy(buf, (void *)(p + 8), n);
+				buf[n] = 0;
+				con_str("DISPC", buf);
 			}
 			p = align4(p + 8 + len);
 		} else if (tok == FDT_NOP) {
